@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Local database artifacts
+data/monitoring.db
+
+# Frontend artifacts
+frontend/node_modules/
+frontend/dist/
+
+# Logs
+*.log

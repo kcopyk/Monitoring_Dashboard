@@ -258,22 +258,34 @@ function App() {
   };
 
   const driftPoints = useMemo(
-    () => (driftTrend?.points ?? []).map((p) => ({ ...p, timestamp: formatDateTime(p.timestamp), time: formatTime(p.timestamp) })),
+    () => (driftTrend?.points ?? []).map((p) => ({ ...p, x: p.timestamp })),
     [driftTrend],
   );
 
   const confidenceChartPoints = useMemo(
-    () => (confTrend?.points ?? []).map((p) => ({ ...p, hour: formatUtcHourToBangkok(p.hour) })),
+    () =>
+      (confTrend?.points ?? []).map((p, idx, arr) => ({
+        ...p,
+        hoverLabel: formatRelativeBangkokHourLabel(idx, arr.length),
+      })),
     [confTrend],
   );
 
   const classRatioChartPoints = useMemo(
-    () => classRatio.map((p) => ({ ...p, hour: formatUtcHourToBangkok(p.hour) })),
+    () =>
+      classRatio.map((p, idx, arr) => ({
+        ...p,
+        hoverLabel: formatRelativeBangkokHourLabel(idx, arr.length),
+      })),
     [classRatio],
   );
 
   const perfTrendChartPoints = useMemo(
-    () => (perfTrend?.points ?? []).map((p) => ({ ...p, hour: formatUtcHourTextToBangkok(p.hour) })),
+    () =>
+      (perfTrend?.points ?? []).map((p) => ({
+        ...p,
+        hoverLabel: formatPerfHourLabel(p.hour),
+      })),
     [perfTrend],
   );
 
@@ -376,7 +388,7 @@ function App() {
                 <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" />
                 <XAxis dataKey="hour" stroke="#64748b" />
                 <YAxis domain={[0, 1]} stroke="#64748b" />
-                <Tooltip />
+                <Tooltip labelFormatter={tooltipHoverDateLabel} />
                 <Legend />
                 <Line type="monotone" dataKey="avg_confidence" stroke="#0ea5a4" strokeWidth={3} dot={false} />
                 <ReferenceLine y={confTrend?.threshold ?? 0.6} stroke="#ea580c" strokeDasharray="5 5" />
@@ -393,7 +405,7 @@ function App() {
                 <XAxis dataKey="hour" stroke="#64748b" />
                 <YAxis tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} stroke="#64748b" />
                 {/* @ts-expect-error Recharts formatter typing is narrower than runtime payloads */}
-                <Tooltip formatter={ratioTooltipFormatter} />
+                <Tooltip formatter={ratioTooltipFormatter} labelFormatter={tooltipHoverDateLabel} />
                 <Legend />
                 <Area type="monotone" dataKey="beverages" stackId="1" stroke="#14b8a6" fill="#14b8a6" fillOpacity={0.7} />
                 <Area type="monotone" dataKey="snacks" stackId="1" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.65} />
@@ -407,9 +419,12 @@ function App() {
             <ResponsiveContainer width="100%" height={300}>
               <LineChart data={driftPoints}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" />
-                <XAxis dataKey="time" stroke="#64748b" />
+                <XAxis dataKey="x" stroke="#64748b" tickFormatter={(value) => formatTime(String(value))} />
                 <YAxis stroke="#64748b" />
-                <Tooltip formatter={(v) => (typeof v === "number" ? v.toFixed(4) : v)} />
+                <Tooltip
+                  labelFormatter={(label) => formatDateTime(String(label))}
+                  formatter={(v) => (typeof v === "number" ? v.toFixed(4) : v)}
+                />
                 <Legend />
                 <Line type="monotone" dataKey="embedding_score" stroke="#f97316" />
                 <Line type="monotone" dataKey="confidence_score" stroke="#0284c7" />
@@ -429,7 +444,7 @@ function App() {
                 <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" />
                 <XAxis dataKey="hour" stroke="#64748b" />
                 <YAxis domain={[0, 1]} stroke="#64748b" />
-                <Tooltip />
+                <Tooltip labelFormatter={tooltipHoverDateLabel} />
                 <Legend />
                 <Line type="monotone" dataKey="accuracy" stroke="#0f766e" strokeWidth={3} dot={false} />
                 <Line type="monotone" dataKey="f1" stroke="#1d4ed8" />
@@ -905,7 +920,7 @@ function formatNumber(value: number) {
 
 function formatDate(ts: string) {
   try {
-    const d = new Date(ts.includes("T") ? ts : `${ts.replace(" ", "T")}Z`);
+    const d = parseBangkokDate(ts);
     if (Number.isNaN(d.getTime())) return ts;
     return new Intl.DateTimeFormat("en-GB", {
       timeZone: "Asia/Bangkok",
@@ -920,7 +935,7 @@ function formatDate(ts: string) {
 
 function formatTime(ts: string) {
   try {
-    const d = new Date(ts.includes("T") ? ts : `${ts.replace(" ", "T")}Z`);
+    const d = parseBangkokDate(ts);
     if (Number.isNaN(d.getTime())) return "";
     return new Intl.DateTimeFormat("en-GB", {
       timeZone: "Asia/Bangkok",
@@ -939,41 +954,60 @@ function formatDateTime(ts: string) {
   return time ? `${date} ${time}` : date;
 }
 
-function formatUtcHourToBangkok(hourText: string) {
-  const match = hourText.match(/^(\d{2}):(\d{2})$/);
-  if (!match) return hourText;
-
-  const hour = Number(match[1]);
-  const minute = Number(match[2]);
-  if (Number.isNaN(hour) || Number.isNaN(minute)) return hourText;
-
-  const bangkokHour = (hour + 7) % 24;
-  return `${bangkokHour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`;
+function formatBangkokDateTime(date: Date) {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Bangkok",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
-function formatUtcHourTextToBangkok(value: string) {
+function formatRelativeBangkokHourLabel(index: number, total: number) {
+  if (total <= 0) return "";
+  const now = new Date();
+  const bangkokNow = new Date(
+    now.toLocaleString("sv-SE", {
+      timeZone: "Asia/Bangkok",
+      hour12: false,
+    }).replace(" ", "T") + "+07:00",
+  );
+  bangkokNow.setMinutes(0, 0, 0);
+  const target = new Date(bangkokNow.getTime() - (total - 1 - index) * 60 * 60 * 1000);
+  return formatBangkokDateTime(target);
+}
+
+function formatPerfHourLabel(value: string) {
   const match = value.match(/^(\d{2})-(\d{2})\s(\d{2}):(\d{2})$/);
-  if (!match) {
-    return formatUtcHourToBangkok(value);
-  }
+  if (!match) return value;
 
   const month = Number(match[1]);
   const day = Number(match[2]);
   const hour = Number(match[3]);
   const minute = Number(match[4]);
-  const year = new Date().getUTCFullYear();
-  const date = new Date(Date.UTC(year, month - 1, day, hour, minute));
-
+  const year = new Date().getFullYear();
+  const date = new Date(`${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:00+07:00`);
   if (Number.isNaN(date.getTime())) return value;
 
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Bangkok",
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(date);
+  return formatBangkokDateTime(date);
+}
+
+function tooltipHoverDateLabel(label: React.ReactNode, payload?: ReadonlyArray<{ payload?: { hoverLabel?: string } }>) {
+  const hoverLabel = payload?.[0]?.payload?.hoverLabel;
+  if (hoverLabel) return hoverLabel;
+  if (typeof label === "string" || typeof label === "number") return String(label);
+  return "";
+}
+
+function parseBangkokDate(ts: string) {
+  if (ts.includes("+") || ts.endsWith("Z")) {
+    return new Date(ts);
+  }
+  const normalized = ts.includes("T") ? ts : ts.replace(" ", "T");
+  return new Date(`${normalized}+07:00`);
 }
 
 export default App;

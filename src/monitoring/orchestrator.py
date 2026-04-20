@@ -96,10 +96,12 @@ def run_orchestrator_from_db() -> dict:
 
     alert_messages = []
     if is_drift:
+        latest_ts = recent_rows[-1].get("timestamp")
+        drift_time_suffix = f" at {latest_ts} ICT" if latest_ts else ""
         alert_messages.append(
             (
                 "drift_detected",
-                f"Drift detected in the last {WINDOW_SIZE} predictions: embedding={embedding_score:.2f}, confidence={confidence_score:.2f}, class={class_score:.2f}",
+                f"Drift detected in the last {WINDOW_SIZE} predictions{drift_time_suffix}: embedding={embedding_score:.2f}, confidence={confidence_score:.2f}, class={class_score:.2f}",
             )
         )
     if low_confidence_ratio >= LOW_CONFIDENCE_SPIKE_THRESHOLD:

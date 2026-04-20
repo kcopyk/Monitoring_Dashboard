@@ -12,6 +12,7 @@ import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # Ensure src/ is on the import path when running the script directly
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +20,12 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
 from src.monitoring.store import DB_PATH, init_db
+
+
+EMBEDDING_THRESHOLD = 1.95
+CONFIDENCE_THRESHOLD = 0.25
+CLASS_THRESHOLD = 0.10
+THAI_TZ = ZoneInfo("Asia/Bangkok")
 
 
 def _clip(value: float, lo: float, hi: float) -> float:
@@ -61,6 +68,17 @@ def _confidence_profile(hour_of_day: int) -> tuple[float, float]:
     if 18 <= hour_of_day <= 23:
         return 0.89, 0.05
     return 0.92, 0.04
+
+
+def _drift_volatility(hour_of_day: int) -> tuple[float, bool]:
+    # Expected behavior from real observations:
+    # - daytime is stable with small drift oscillation
+    # - 02:00-05:00 has strong oscillation and should be monitored
+    if 2 <= hour_of_day <= 5:
+        return random.uniform(0.30, 0.40), True
+    if 10 <= hour_of_day <= 17:
+        return random.uniform(0.05, 0.10), False
+    return random.uniform(0.12, 0.18), False
 
 
 def seed_predictions(cursor: sqlite3.Cursor, start_at: datetime, hours: int, per_hour: int) -> list[dict]:
@@ -164,33 +182,41 @@ def seed_feedback(cursor: sqlite3.Cursor, predictions: list[dict], label_rate: f
 
 
 def seed_drift_events(cursor: sqlite3.Cursor, start_at: datetime, hours: int) -> list[dict]:
-    """Insert hourly drift events that stay high (0.8-0.9) with short drops."""
+    """Insert hourly drift events using real threshold scale and time-based volatility."""
     events: list[dict] = []
-    drop_remaining = 0
-    drop_cooldown = 0
+
+    # Baseline values are slightly below thresholds so normal periods are mostly stable.
+    embedding_baseline = 1.86
+    confidence_baseline = 0.20
+    class_baseline = 0.07
+
     for i in range(hours):
         ts = start_at + timedelta(hours=i)
+        hour_of_day = ts.hour
+        amp, is_night_watch = _drift_volatility(hour_of_day)
 
-        if drop_remaining == 0 and drop_cooldown == 0 and random.random() < 0.1:
-            drop_remaining = random.randint(1, 2)
+        # Add slight upward shift during late-night windows to emulate unstable environment.
+        night_bias = 0.08 if is_night_watch else 0.0
 
-        if drop_remaining > 0:
-            embedding_score = _clip(random.gauss(0.53, 0.05), 0.36, 0.68)
-            confidence_score = _clip(random.gauss(0.55, 0.05), 0.36, 0.70)
-            class_score = _clip(random.gauss(0.5, 0.06), 0.32, 0.68)
-            drop_remaining -= 1
-            if drop_remaining == 0:
-                drop_cooldown = 4
-        else:
-            embedding_score = _clip(random.gauss(0.86, 0.035), 0.78, 0.93)
-            confidence_score = _clip(random.gauss(0.87, 0.035), 0.79, 0.94)
-            class_score = _clip(random.gauss(0.84, 0.04), 0.74, 0.92)
-            if drop_cooldown > 0:
-                drop_cooldown -= 1
+        embedding_score = _clip(
+            embedding_baseline + random.uniform(-amp, amp) + random.gauss(0.0, amp * 0.12) + night_bias,
+            0.80,
+            2.80,
+        )
+        confidence_score = _clip(
+            confidence_baseline + random.uniform(-amp * 0.20, amp * 0.20) + random.gauss(0.0, amp * 0.05),
+            0.00,
+            1.00,
+        )
+        class_score = _clip(
+            class_baseline + random.uniform(-amp * 0.14, amp * 0.14) + random.gauss(0.0, amp * 0.04),
+            0.00,
+            1.00,
+        )
 
-        embedding_drifted = embedding_score > 0.55
-        confidence_drifted = confidence_score > 0.55
-        class_drifted = class_score > 0.55
+        embedding_drifted = embedding_score > EMBEDDING_THRESHOLD
+        confidence_drifted = confidence_score > CONFIDENCE_THRESHOLD
+        class_drifted = class_score > CLASS_THRESHOLD
         is_drift = embedding_drifted or confidence_drifted or class_drifted
 
         cursor.execute(
@@ -255,7 +281,7 @@ def seed_alerts(cursor: sqlite3.Cursor, predictions: list[dict], drift_events: l
         alerts.append(
             (
                 "drift_detected",
-                "Drift detected across at least one monitored dimension",
+                f"Drift detected across at least one monitored dimension at {ts.strftime('%Y-%m-%d %H:%M:%S')} ICT",
                 ts,
                 0,
             )
@@ -321,7 +347,7 @@ def main() -> None:
             """
         )
 
-    start_at = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0, tzinfo=None) - timedelta(hours=args.hours - 1)
+    start_at = datetime.now(THAI_TZ).replace(minute=0, second=0, microsecond=0, tzinfo=None) - timedelta(hours=args.hours - 1)
 
     predictions = seed_predictions(cursor, start_at, args.hours, args.per_hour)
     labeled = seed_feedback(cursor, predictions, label_rate=args.label_rate)

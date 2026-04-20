@@ -10,6 +10,10 @@ from src.monitoring.store import DB_PATH, count_rows, recent_hours, resolve_aler
 
 router = APIRouter(prefix="/monitoring", tags=["Monitoring"])
 
+EMBEDDING_THRESHOLD = 1.95
+CONFIDENCE_THRESHOLD = 0.25
+CLASS_THRESHOLD = 0.10
+
 
 class LabelRequest(BaseModel):
     true_label: str
@@ -261,22 +265,22 @@ def get_kpi():
     conn = sqlite3.connect(DB_PATH, timeout=10)
     cursor = conn.cursor()
 
-    cursor.execute("SELECT COUNT(*) FROM prediction_events WHERE DATE(timestamp) = DATE('now')")
+    cursor.execute("SELECT COUNT(*) FROM prediction_events WHERE DATE(timestamp) = DATE('now', '+7 hours')")
     total_today = cursor.fetchone()[0]
 
     cursor.execute("""
         SELECT COUNT(*) FROM prediction_events
-        WHERE confidence < 0.6 AND timestamp >= datetime('now', '-24 hours')
+        WHERE confidence < 0.6 AND timestamp >= datetime('now', '+7 hours', '-24 hours')
     """)
     low_conf = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM prediction_events WHERE timestamp >= datetime('now', '-24 hours')")
+    cursor.execute("SELECT COUNT(*) FROM prediction_events WHERE timestamp >= datetime('now', '+7 hours', '-24 hours')")
     total_24h = cursor.fetchone()[0]
     low_conf_rate = low_conf / total_24h if total_24h > 0 else 0
 
     cursor.execute("""
         SELECT COUNT(*) FROM drift_events
-        WHERE is_drift = 1 AND timestamp >= datetime('now', '-24 hours')
+        WHERE is_drift = 1 AND timestamp >= datetime('now', '+7 hours', '-24 hours')
     """)
     drift_count = cursor.fetchone()[0]
     drift_status = "พบ Drift" if drift_count > 0 else "ปกติ"
@@ -302,7 +306,7 @@ def confidence_trend():
     cursor.execute("""
         SELECT strftime('%Y-%m-%d %H:00', timestamp) AS h, AVG(confidence)
         FROM prediction_events
-        WHERE timestamp >= datetime('now', '-24 hours')
+        WHERE timestamp >= datetime('now', '+7 hours', '-24 hours')
         GROUP BY h
     """)
     rows = {r[0]: r[1] for r in cursor.fetchall()}
@@ -320,7 +324,7 @@ def class_ratio():
     cursor.execute("""
         SELECT strftime('%Y-%m-%d %H:00', timestamp) AS h, predicted_class, COUNT(*)
         FROM prediction_events
-        WHERE timestamp >= datetime('now', '-24 hours')
+        WHERE timestamp >= datetime('now', '+7 hours', '-24 hours')
         GROUP BY h, predicted_class
     """)
     raw = cursor.fetchall()
@@ -358,7 +362,11 @@ def drift_trend(limit: int = 100):
         for r in reversed(rows)
     ]
     return {
-        "thresholds": {"embedding": 0.55, "confidence": 0.55, "class": 0.55},
+        "thresholds": {
+            "embedding": EMBEDDING_THRESHOLD,
+            "confidence": CONFIDENCE_THRESHOLD,
+            "class": CLASS_THRESHOLD,
+        },
         "points": data,
     }
 
@@ -422,7 +430,7 @@ def submit_label(prediction_id: int, payload: LabelRequest):
         cursor.execute(
             """
             UPDATE human_feedback
-            SET true_label = ?, labeled_at = CURRENT_TIMESTAMP
+            SET true_label = ?, labeled_at = datetime('now', '+7 hours')
             WHERE prediction_id = ?
             """,
             (true_label, prediction_id),
@@ -431,7 +439,7 @@ def submit_label(prediction_id: int, payload: LabelRequest):
         cursor.execute(
             """
             INSERT INTO human_feedback (prediction_id, true_label, labeled_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, datetime('now', '+7 hours'))
             """,
             (prediction_id, true_label),
         )

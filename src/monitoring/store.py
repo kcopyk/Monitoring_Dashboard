@@ -166,14 +166,15 @@ def recent_hours(n=24):
 
 def upsert_alert(alert_type, message, dedupe_hours=1):
     if dedupe_hours > 0:
+        cutoff = (datetime.now(THAI_TZ) - timedelta(hours=dedupe_hours)).strftime("%Y-%m-%d %H:%M:%S")
         rows = fetch_rows(
             """
             SELECT 1 FROM alerts
             WHERE alert_type = ?
-                            AND timestamp >= datetime('now', '+7 hours', ?)
+                            AND timestamp >= ?
             LIMIT 1
             """,
-            (alert_type, f'-{dedupe_hours} hours')
+            (alert_type, cutoff)
         )
         if rows:
             return False

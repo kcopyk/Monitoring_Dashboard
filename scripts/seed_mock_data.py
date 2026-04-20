@@ -10,7 +10,7 @@ import json
 import random
 import sqlite3
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -85,6 +85,7 @@ def seed_predictions(cursor: sqlite3.Cursor, start_at: datetime, hours: int, per
     """Insert synthetic prediction rows spanning the last N hours."""
     predictions: list[dict] = []
     classes = ["beverages", "snacks"]
+    seed_now = datetime.now(THAI_TZ).replace(microsecond=0, tzinfo=None)
 
     for i in range(hours):
         hour_start = start_at + timedelta(hours=i)
@@ -98,6 +99,8 @@ def seed_predictions(cursor: sqlite3.Cursor, start_at: datetime, hours: int, per
             ts = hour_start + timedelta(
                 minutes=random.randint(0, 59), seconds=random.randint(0, 59)
             )
+            if ts > seed_now:
+                ts = seed_now
 
             predicted_class = random.choices(classes, weights=[bev_w, snk_w], k=1)[0]
 
@@ -264,7 +267,7 @@ def seed_alerts(cursor: sqlite3.Cursor, predictions: list[dict], drift_events: l
             continue
 
         low_conf_share = sum(p["confidence"] < 0.6 for p in chunk) / len(chunk)
-        chunk_end = chunk[-1]["timestamp"].replace(tzinfo=timezone.utc)
+        chunk_end = chunk[-1]["timestamp"]
 
         if low_conf_share >= 0.33:
             alerts.append(
@@ -276,7 +279,7 @@ def seed_alerts(cursor: sqlite3.Cursor, predictions: list[dict], drift_events: l
                 )
             )
 
-    drift_times = [e["timestamp"].replace(tzinfo=timezone.utc) for e in drift_events if e["is_drift"]]
+    drift_times = [e["timestamp"] for e in drift_events if e["is_drift"]]
     for ts in drift_times[-3:]:
         alerts.append(
             (
@@ -293,7 +296,7 @@ def seed_alerts(cursor: sqlite3.Cursor, predictions: list[dict], drift_events: l
             (
                 "image_quality_drop",
                 "Image quality dropped in camera feed (blur/brightness anomaly)",
-                point["timestamp"].replace(tzinfo=timezone.utc),
+                point["timestamp"],
                 1,
             )
         )

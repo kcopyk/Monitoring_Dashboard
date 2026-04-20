@@ -1,6 +1,8 @@
 from collections import OrderedDict
+from datetime import datetime, timedelta
 import json
 import sqlite3
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
@@ -13,6 +15,15 @@ router = APIRouter(prefix="/monitoring", tags=["Monitoring"])
 EMBEDDING_THRESHOLD = 1.95
 CONFIDENCE_THRESHOLD = 0.25
 CLASS_THRESHOLD = 0.10
+THAI_TZ = ZoneInfo("Asia/Bangkok")
+
+
+def _bangkok_now_str() -> str:
+    return datetime.now(THAI_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _bangkok_cutoff_str(hours: int) -> str:
+    return (datetime.now(THAI_TZ) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class LabelRequest(BaseModel):
@@ -264,24 +275,26 @@ def db_query(payload: QueryRequest):
 def get_kpi():
     conn = sqlite3.connect(DB_PATH, timeout=10)
     cursor = conn.cursor()
+    today = _bangkok_now_str()[:10]
+    last_24h = _bangkok_cutoff_str(24)
 
-    cursor.execute("SELECT COUNT(*) FROM prediction_events WHERE DATE(timestamp) = DATE('now', '+7 hours')")
+    cursor.execute("SELECT COUNT(*) FROM prediction_events WHERE DATE(timestamp) = ?", (today,))
     total_today = cursor.fetchone()[0]
 
     cursor.execute("""
         SELECT COUNT(*) FROM prediction_events
-        WHERE confidence < 0.6 AND timestamp >= datetime('now', '+7 hours', '-24 hours')
-    """)
+        WHERE confidence < 0.6 AND timestamp >= ?
+    """, (last_24h,))
     low_conf = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM prediction_events WHERE timestamp >= datetime('now', '+7 hours', '-24 hours')")
+    cursor.execute("SELECT COUNT(*) FROM prediction_events WHERE timestamp >= ?", (last_24h,))
     total_24h = cursor.fetchone()[0]
     low_conf_rate = low_conf / total_24h if total_24h > 0 else 0
 
     cursor.execute("""
         SELECT COUNT(*) FROM drift_events
-        WHERE is_drift = 1 AND timestamp >= datetime('now', '+7 hours', '-24 hours')
-    """)
+        WHERE is_drift = 1 AND timestamp >= ?
+    """, (last_24h,))
     drift_count = cursor.fetchone()[0]
     drift_status = "พบ Drift" if drift_count > 0 else "ปกติ"
 
@@ -306,9 +319,9 @@ def confidence_trend():
     cursor.execute("""
         SELECT strftime('%Y-%m-%d %H:00', timestamp) AS h, AVG(confidence)
         FROM prediction_events
-        WHERE timestamp >= datetime('now', '+7 hours', '-24 hours')
+        WHERE timestamp >= ?
         GROUP BY h
-    """)
+    """, (_bangkok_cutoff_str(24),))
     rows = {r[0]: r[1] for r in cursor.fetchall()}
     conn.close()
     data = [{"hour": h[-5:], "avg_confidence": round(rows.get(h, 0), 3)} for h in hours]
@@ -324,9 +337,9 @@ def class_ratio():
     cursor.execute("""
         SELECT strftime('%Y-%m-%d %H:00', timestamp) AS h, predicted_class, COUNT(*)
         FROM prediction_events
-        WHERE timestamp >= datetime('now', '+7 hours', '-24 hours')
+        WHERE timestamp >= ?
         GROUP BY h, predicted_class
-    """)
+    """, (_bangkok_cutoff_str(24),))
     raw = cursor.fetchall()
     conn.close()
 
@@ -430,18 +443,18 @@ def submit_label(prediction_id: int, payload: LabelRequest):
         cursor.execute(
             """
             UPDATE human_feedback
-            SET true_label = ?, labeled_at = datetime('now', '+7 hours')
+            SET true_label = ?, labeled_at = ?
             WHERE prediction_id = ?
             """,
-            (true_label, prediction_id),
+            (true_label, _bangkok_now_str(), prediction_id),
         )
     else:
         cursor.execute(
             """
             INSERT INTO human_feedback (prediction_id, true_label, labeled_at)
-            VALUES (?, ?, datetime('now', '+7 hours'))
+            VALUES (?, ?, ?)
             """,
-            (prediction_id, true_label),
+            (prediction_id, true_label, _bangkok_now_str()),
         )
 
     conn.commit()
